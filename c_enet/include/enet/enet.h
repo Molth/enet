@@ -986,14 +986,13 @@ extern "C"
   ENET_API int enet_socket_set_option(ENetSocket, ENetSocketOption, int);
 
   /**
-    Retrieves the given option for the socket.
-    @param socket The socket to query.
-    @param option The option to retrieve.
-    @param value Receives the option value.
+    Sets the socket to blocking or non-blocking mode.
+    @param socket The socket to configure.
+    @param nonBlocking Non-zero to enable non-blocking mode.
     @retval 0 on success
     @retval -1 on failure
   */
-  ENET_API int enet_socket_get_option(ENetSocket, ENetSocketOption, int *);
+  ENET_API int enet_socket_set_nonblocking(ENetSocket, int);
 
   /**
     Closes and invalidates the given socket.
@@ -1006,46 +1005,6 @@ extern "C"
   /** @defgroup Address ENet address functions
       @{
   */
-
-  /** Attempts to parse the printable form of the IP address in the parameter hostName
-      and sets the host field in the address parameter if successful.
-      @param address destination to store the parsed IP address
-      @param hostName IP address to parse
-      @retval 0 on success
-      @retval < 0 on failure
-      @returns the address of the given hostName in address on success
-  */
-  ENET_API int enet_address_set_host_ip(ENetAddress *address, const char *hostName);
-
-  /** Attempts to resolve the host named by the parameter hostName and sets
-      the host field in the address parameter if successful.
-      @param address destination to store resolved address
-      @param hostName host name to lookup
-      @retval 0 on success
-      @retval < 0 on failure
-      @returns the address of the given hostName in address on success
-  */
-  ENET_API int enet_address_set_host(ENetAddress *address, const char *hostName);
-
-  /** Gives the printable form of the IP address specified in the address parameter.
-      @param address    address printed
-      @param hostName   destination for name, must not be NULL
-      @param nameLength maximum length of hostName.
-      @returns the null-terminated name of the host in hostName on success
-      @retval 0 on success
-      @retval < 0 on failure
-  */
-  ENET_API int enet_address_get_host_ip(const ENetAddress *address, char *hostName, size_t nameLength);
-
-  /** Attempts to do a reverse lookup of the host field in the address parameter.
-      @param address    address used for reverse lookup
-      @param hostName   destination for name, must not be NULL
-      @param nameLength maximum length of hostName.
-      @returns the null-terminated name of the host in hostName on success
-      @retval 0 on success
-      @retval < 0 on failure
-  */
-  ENET_API int enet_address_get_host(const ENetAddress *address, char *hostName, size_t nameLength);
 
   /** Populates an ENet address by parsing an Ipv4 address string and port.
       @param address The address to populate.

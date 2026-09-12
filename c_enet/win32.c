@@ -4,6 +4,7 @@
 */
 #define ENET_BUILDING_LIB 1
 #include "enet/enet.h"
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef _WIN32
@@ -35,11 +36,9 @@ _timeGetMilliseconds(void)
     @param bufferCount The number of buffers.
 */
 static void
-_toNativeIoVecs(_NativeIoSlice *iovecs, const ENetBuffer *buffers, size_t bufferCount)
+_BuildNativeIoSlices(_NativeIoSlice *iovecs, const ENetBuffer *buffers, size_t bufferCount)
 {
-    size_t i;
-
-    for (i = 0; i < bufferCount; ++i)
+    for (size_t i = 0; i < bufferCount; ++i)
     {
         iovecs[i]._buffer = buffers[i].data;
         iovecs[i]._length = (i32)buffers[i].dataLength;
@@ -84,81 +83,6 @@ enet_time_get(void)
 void enet_time_set(enet_uint32 newTimeBase)
 {
     timeBase = _timeGetMilliseconds() - newTimeBase;
-}
-
-/** Attempts to parse the printable form of the IP address in the parameter name and sets the host field in the address parameter if successful.
-    @param address destination to store the parsed IP address
-    @param name IP address to parse
-    @retval 0 on success
-    @retval < 0 on failure
-*/
-int enet_address_set_host_ip(ENetAddress *address, const char *name)
-{
-    i32 error;
-
-    if (strchr(name, ':') != NULL)
-        error = _NativeSocketAddress_SetIpIpv6(&address->inner, name, 0, 0);
-    else
-        error = _NativeSocketAddress_SetIpIpv4(&address->inner, name, 0);
-
-    return error == _SOCKET_ERROR_SUCCESS ? 0 : -1;
-}
-
-/** Attempts to resolve the host named by the parameter name and sets the host field in the address parameter if successful.
-    @param address destination to store resolved address
-    @param name host name to lookup
-    @retval 0 on success
-    @retval < 0 on failure
-*/
-int enet_address_set_host(ENetAddress *address, const char *name)
-{
-    i32 error;
-
-    if (strchr(name, ':') != NULL)
-    {
-        error = _NativeSocketAddress_SetHostNameIpv6(&address->inner, name, 0, 0);
-        if (error == _SOCKET_ERROR_SUCCESS)
-            return 0;
-    }
-    else
-    {
-        error = _NativeSocketAddress_SetHostNameIpv4(&address->inner, name, 0);
-        if (error == _SOCKET_ERROR_SUCCESS)
-            return 0;
-    }
-
-    return enet_address_set_host_ip(address, name);
-}
-
-/** Gives the printable form of the IP address specified in the address parameter.
-    @param address address printed
-    @param name destination for name, must not be NULL
-    @param nameLength maximum length of name
-    @retval 0 on success
-    @retval < 0 on failure
-*/
-int enet_address_get_host_ip(const ENetAddress *address, char *name, size_t nameLength)
-{
-    i32 error = _NativeSocketAddress_GetIp(&((ENetAddress *)address)->inner, name, (i32)nameLength);
-
-    return error == _SOCKET_ERROR_SUCCESS ? 0 : -1;
-}
-
-/** Attempts to do a reverse lookup of the host field in the address parameter.
-    @param address address used for reverse lookup
-    @param name destination for name, must not be NULL
-    @param nameLength maximum length of name
-    @retval 0 on success
-    @retval < 0 on failure
-*/
-int enet_address_get_host(const ENetAddress *address, char *name, size_t nameLength)
-{
-    i32 error = _NativeSocketAddress_GetHostName(&((ENetAddress *)address)->inner, name, (i32)nameLength);
-
-    if (error != _SOCKET_ERROR_SUCCESS)
-        return enet_address_get_host_ip(address, name, nameLength);
-
-    return 0;
 }
 
 /** Populates an ENet address by parsing an Ipv4 address string and port.
@@ -242,10 +166,7 @@ int enet_address_get_hostname(const ENetAddress *address, char *hostName, size_t
 {
     i32 error = _NativeSocketAddress_GetHostName(&((ENetAddress *)address)->inner, hostName, (i32)nameLength);
 
-    if (error != _SOCKET_ERROR_SUCCESS)
-        return enet_address_get_host_ip(address, hostName, nameLength);
-
-    return 0;
+    return error == _SOCKET_ERROR_SUCCESS ? 0 : -1;
 }
 
 /** Creates a native socket of the requested type and addressing mode.
@@ -264,16 +185,19 @@ enet_socket_create(ENetSocketType type, ENetHostOption option)
 
     ipv6 = (option == ENET_HOSTOPT_IPV6_ONLY || option == ENET_HOSTOPT_IPV6_DUALMODE) ? 1 : 0;
 
-    socket.inner.handle = _Create(ipv6);
-    socket.inner.family = ipv6 ? _SOCKET_FAMILY_INTER_NETWORK_V6 : _SOCKET_FAMILY_INTER_NETWORK;
+    if (_NativeSockets_Create(ipv6, &socket.inner) != _SOCKET_ERROR_SUCCESS)
+        return ENET_SOCKET_NULL;
 
-    if (socket.inner.handle == (isize)-1)
-        return socket;
-
-    if (option == ENET_HOSTOPT_IPV6_ONLY)
-        _SetDualModeIpv6(socket.inner.handle, 0);
-    else if (option == ENET_HOSTOPT_IPV6_DUALMODE)
-        _SetDualModeIpv6(socket.inner.handle, 1);
+    if (option == ENET_HOSTOPT_IPV6_ONLY && _NativeSockets_SetDualMode(&socket.inner, 0) != _SOCKET_ERROR_SUCCESS)
+    {
+        _NativeSockets_Dispose(&socket.inner);
+        return ENET_SOCKET_NULL;
+    }
+    else if (option == ENET_HOSTOPT_IPV6_DUALMODE && _NativeSockets_SetDualMode(&socket.inner, 1) != _SOCKET_ERROR_SUCCESS)
+    {
+        _NativeSockets_Dispose(&socket.inner);
+        return ENET_SOCKET_NULL;
+    }
 
     return socket;
 }
@@ -286,19 +210,7 @@ enet_socket_create(ENetSocketType type, ENetHostOption option)
 */
 int enet_socket_bind(ENetSocket socket, const ENetAddress *address)
 {
-    i32 result;
-
-    if (address != NULL)
-    {
-        if (_NativeSocketAddress_IsIpv4(&address->inner))
-            result = _BindIpv4(socket.inner.handle, (_sockaddr_in4 *)&address->inner.sin4);
-        else
-            result = _BindIpv6(socket.inner.handle, (_sockaddr_in6 *)&address->inner.sin6);
-    }
-    else if (socket.inner.family == _SOCKET_FAMILY_INTER_NETWORK)
-        result = _BindIpv4(socket.inner.handle, NULL);
-    else
-        result = _BindIpv6(socket.inner.handle, NULL);
+    i32 result = _NativeSockets_Bind(&socket.inner, address != NULL ? &address->inner : NULL);
 
     return result == _SOCKET_ERROR_SUCCESS ? 0 : -1;
 }
@@ -311,12 +223,7 @@ int enet_socket_bind(ENetSocket socket, const ENetAddress *address)
 */
 int enet_socket_get_address(ENetSocket socket, ENetAddress *address)
 {
-    i32 result;
-
-    if (socket.inner.family == _SOCKET_FAMILY_INTER_NETWORK)
-        result = _GetNameIpv4(socket.inner.handle, &address->inner.sin4);
-    else
-        result = _GetNameIpv6(socket.inner.handle, &address->inner.sin6);
+    i32 result = _NativeSockets_GetName(&socket.inner, &address->inner);
 
     return result == _SOCKET_ERROR_SUCCESS ? 0 : -1;
 }
@@ -335,39 +242,39 @@ int enet_socket_set_option(ENetSocket socket, ENetSocketOption option, int value
     switch (option)
     {
     case ENET_SOCKOPT_NONBLOCK:
-        result = _SetBlocking(socket.inner.handle, value ? 0 : 1);
+        result = enet_socket_set_nonblocking(socket, value);
         break;
 
     case ENET_SOCKOPT_BROADCAST:
-        result = _SetOption(socket.inner.handle, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_BROADCAST, (u8 *)&value, sizeof(int));
+        result = _NativeSockets_SetOption(&socket.inner, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_BROADCAST, (u8 *)&value, sizeof(int));
         break;
 
     case ENET_SOCKOPT_REUSEADDR:
-        result = _SetOption(socket.inner.handle, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_REUSE_ADDRESS, (u8 *)&value, sizeof(int));
+        result = _NativeSockets_SetOption(&socket.inner, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_REUSE_ADDRESS, (u8 *)&value, sizeof(int));
         break;
 
     case ENET_SOCKOPT_RCVBUF:
-        result = _SetOption(socket.inner.handle, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_RECEIVE_BUFFER, (u8 *)&value, sizeof(int));
+        result = _NativeSockets_SetOption(&socket.inner, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_RECEIVE_BUFFER, (u8 *)&value, sizeof(int));
         break;
 
     case ENET_SOCKOPT_SNDBUF:
-        result = _SetOption(socket.inner.handle, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_SEND_BUFFER, (u8 *)&value, sizeof(int));
+        result = _NativeSockets_SetOption(&socket.inner, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_SEND_BUFFER, (u8 *)&value, sizeof(int));
         break;
 
     case ENET_SOCKOPT_RCVTIMEO:
-        result = _SetOption(socket.inner.handle, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_RECEIVE_TIMEOUT, (u8 *)&value, sizeof(int));
+        result = _NativeSockets_SetOption(&socket.inner, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_RECEIVE_TIMEOUT, (u8 *)&value, sizeof(int));
         break;
 
     case ENET_SOCKOPT_SNDTIMEO:
-        result = _SetOption(socket.inner.handle, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_SEND_TIMEOUT, (u8 *)&value, sizeof(int));
+        result = _NativeSockets_SetOption(&socket.inner, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_SEND_TIMEOUT, (u8 *)&value, sizeof(int));
         break;
 
     case ENET_SOCKOPT_TTL:
-        result = _SetOption(socket.inner.handle, _SOCKET_OPTION_LEVEL_IP, _SOCKET_OPTION_NAME_IP_TIME_TO_LIVE, (u8 *)&value, sizeof(int));
+        result = _NativeSockets_SetOption(&socket.inner, _SOCKET_OPTION_LEVEL_IP, _SOCKET_OPTION_NAME_IP_TIME_TO_LIVE, (u8 *)&value, sizeof(int));
         break;
 
     case ENET_SOCKOPT_IPV6_ONLY:
-        result = _SetOption(socket.inner.handle, _SOCKET_OPTION_LEVEL_IPV6, _SOCKET_OPTION_NAME_IPV6_V6ONLY, (u8 *)&value, sizeof(int));
+        result = _NativeSockets_SetOption(&socket.inner, _SOCKET_OPTION_LEVEL_IPV6, _SOCKET_OPTION_NAME_IPV6_V6ONLY, (u8 *)&value, sizeof(int));
         break;
 
     default:
@@ -376,31 +283,16 @@ int enet_socket_set_option(ENetSocket socket, ENetSocketOption option, int value
     return result == _SOCKET_ERROR_SUCCESS ? 0 : -1;
 }
 
-/** Retrieves the given option for the socket.
-    @param socket The socket to query.
-    @param option The option to retrieve.
-    @param value Receives the option value.
+/** Sets the socket to blocking or non-blocking mode.
+    @param socket The socket to configure.
+    @param nonBlocking Non-zero to enable non-blocking mode.
     @retval 0 on success
     @retval -1 on failure
 */
-int enet_socket_get_option(ENetSocket socket, ENetSocketOption option, int *value)
+int enet_socket_set_nonblocking(ENetSocket socket, int nonBlocking)
 {
-    int result = _SOCKET_ERROR_INVALID_ARGUMENT;
-    int length = sizeof(int);
+    i32 result = _NativeSockets_SetBlocking(&socket.inner, nonBlocking == 0);
 
-    switch (option)
-    {
-    case ENET_SOCKOPT_ERROR:
-        result = _GetOption(socket.inner.handle, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_ERROR, (u8 *)value, &length);
-        break;
-
-    case ENET_SOCKOPT_TTL:
-        result = _GetOption(socket.inner.handle, _SOCKET_OPTION_LEVEL_IP, _SOCKET_OPTION_NAME_IP_TIME_TO_LIVE, (u8 *)value, &length);
-        break;
-
-    default:
-        break;
-    }
     return result == _SOCKET_ERROR_SUCCESS ? 0 : -1;
 }
 
@@ -410,7 +302,7 @@ int enet_socket_get_option(ENetSocket socket, ENetSocketOption option, int *valu
 void enet_socket_destroy(ENetSocket socket)
 {
     if (socket.inner.handle != (isize)-1)
-        _Close(socket.inner.handle);
+        _NativeSockets_Dispose(&socket.inner);
 }
 
 /** Sends a vectored payload to the specified address on the socket.
@@ -425,22 +317,23 @@ int enet_socket_send(ENetSocket socket,
                      const ENetBuffer *buffers,
                      size_t bufferCount)
 {
-    _NativeIoSlice iovecs[ENET_BUFFER_MAXIMUM];
+    _NativeIoSlice stackIovecs[32];
+    _NativeIoSlice *iovecs = stackIovecs;
     int result;
 
-    _toNativeIoVecs(iovecs, buffers, bufferCount);
-
-    if (address != NULL)
+    if (bufferCount > 32)
     {
-        if (_NativeSocketAddress_IsIpv4(&address->inner))
-            result = _SendToVectoredIpv4(socket.inner.handle, iovecs, (i32)bufferCount, 0, (_sockaddr_in4 *)&address->inner.sin4);
-        else
-            result = _SendToVectoredIpv6(socket.inner.handle, iovecs, (i32)bufferCount, 0, (_sockaddr_in6 *)&address->inner.sin6);
+        iovecs = (_NativeIoSlice *)malloc(sizeof(_NativeIoSlice) * bufferCount);
+        if (iovecs == NULL)
+            return -1;
     }
-    else if (socket.inner.family == _SOCKET_FAMILY_INTER_NETWORK)
-        result = _SendToVectoredIpv4(socket.inner.handle, iovecs, (i32)bufferCount, 0, NULL);
-    else
-        result = _SendToVectoredIpv6(socket.inner.handle, iovecs, (i32)bufferCount, 0, NULL);
+
+    _BuildNativeIoSlices(iovecs, buffers, bufferCount);
+
+    result = _NativeSockets_SendToVectored(&socket.inner, iovecs, (i32)bufferCount, 0, &address->inner);
+
+    if (iovecs != stackIovecs)
+        free(iovecs);
 
     if (result < 0)
     {
@@ -465,16 +358,24 @@ int enet_socket_receive(ENetSocket socket,
                         ENetBuffer *buffers,
                         size_t bufferCount)
 {
-    _NativeIoSlice iovecs[ENET_BUFFER_MAXIMUM];
+    _NativeIoSlice stackIovecs[32];
+    _NativeIoSlice *iovecs = stackIovecs;
     i32 flags = 0;
     int result;
 
-    _toNativeIoVecs(iovecs, buffers, bufferCount);
+    if (bufferCount > 32)
+    {
+        iovecs = (_NativeIoSlice *)malloc(sizeof(_NativeIoSlice) * bufferCount);
+        if (iovecs == NULL)
+            return -1;
+    }
 
-    if (socket.inner.family == _SOCKET_FAMILY_INTER_NETWORK)
-        result = _ReceiveFromVectoredIpv4(socket.inner.handle, iovecs, (i32)bufferCount, &flags, address != NULL ? &address->inner.sin4 : NULL);
-    else
-        result = _ReceiveFromVectoredIpv6(socket.inner.handle, iovecs, (i32)bufferCount, &flags, address != NULL ? &address->inner.sin6 : NULL);
+    _BuildNativeIoSlices(iovecs, buffers, bufferCount);
+
+    result = _NativeSockets_ReceiveFromVectored(&socket.inner, iovecs, (i32)bufferCount, &flags, address != NULL ? &address->inner : NULL);
+
+    if (iovecs != stackIovecs)
+        free(iovecs);
 
     if (result < 0)
     {
@@ -518,7 +419,7 @@ int enet_socket_wait(ENetSocket socket, enet_uint32 *condition, enet_uint32 time
     if (*condition & ENET_SOCKET_WAIT_INTERRUPT)
         inFlags |= _SELECT_MODE_FLAGS_ERROR;
 
-    result = _PollFlags(socket.inner.handle, (i32)(timeout * 1000), inFlags, &outFlags);
+    result = _NativeSockets_PollFlags(&socket.inner, (i32)(timeout * 1000), inFlags, &outFlags);
     if (result != _SOCKET_ERROR_SUCCESS)
         return -1;
 
