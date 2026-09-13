@@ -47,6 +47,9 @@ function(enet_configure target)
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     )
     target_link_libraries(${target} PUBLIC nativesockets_static)
+    if(WIN32)
+        target_link_libraries(${target} PRIVATE winmm)
+    endif()
 endfunction()
 
 if(ENET_STATIC)

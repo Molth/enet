@@ -985,14 +985,6 @@ extern "C"
   */
   ENET_API int enet_socket_set_option(ENetSocket, ENetSocketOption, int);
 
-  /**
-    Sets the socket to blocking or non-blocking mode.
-    @param socket The socket to configure.
-    @param nonBlocking Non-zero to enable non-blocking mode.
-    @retval 0 on success
-    @retval -1 on failure
-  */
-  ENET_API int enet_socket_set_nonblocking(ENetSocket, int);
 
   /**
     Closes and invalidates the given socket.

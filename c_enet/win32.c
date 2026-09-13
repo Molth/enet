@@ -9,8 +9,10 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <mmsystem.h>
 #else
 #include <stdint.h>
+#include <sys/time.h>
 #include <time.h>
 #endif
 
@@ -50,13 +52,24 @@ _BuildNativeIoSlices(_NativeIoSlice *iovecs, const ENetBuffer *buffers, size_t b
 */
 int enet_initialize(void)
 {
-    return _Startup() == _SOCKET_ERROR_SUCCESS ? 0 : -1;
+    if (_Startup() != _SOCKET_ERROR_SUCCESS)
+        return -1;
+
+#ifdef _WIN32
+    timeBeginPeriod(1);
+#endif
+
+    return 0;
 }
 
 /** Shuts down ENet globally. Should be called when a program that has initialized ENet exits.
  */
 void enet_deinitialize(void)
 {
+#ifdef _WIN32
+    timeEndPeriod(1);
+#endif
+
     _Cleanup();
 }
 
@@ -242,7 +255,7 @@ int enet_socket_set_option(ENetSocket socket, ENetSocketOption option, int value
     switch (option)
     {
     case ENET_SOCKOPT_NONBLOCK:
-        result = enet_socket_set_nonblocking(socket, value);
+        result = _NativeSockets_SetBlocking(&socket.inner, value == 0);
         break;
 
     case ENET_SOCKOPT_BROADCAST:
@@ -262,11 +275,19 @@ int enet_socket_set_option(ENetSocket socket, ENetSocketOption option, int value
         break;
 
     case ENET_SOCKOPT_RCVTIMEO:
-        result = _NativeSockets_SetOption(&socket.inner, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_RECEIVE_TIMEOUT, (u8 *)&value, sizeof(int));
-        break;
-
     case ENET_SOCKOPT_SNDTIMEO:
-        result = _NativeSockets_SetOption(&socket.inner, _SOCKET_OPTION_LEVEL_SOCKET, _SOCKET_OPTION_NAME_SEND_TIMEOUT, (u8 *)&value, sizeof(int));
+#ifdef _WIN32
+        result = _NativeSockets_SetOption(&socket.inner, _SOCKET_OPTION_LEVEL_SOCKET, option == ENET_SOCKOPT_RCVTIMEO ? _SOCKET_OPTION_NAME_RECEIVE_TIMEOUT : _SOCKET_OPTION_NAME_SEND_TIMEOUT, (u8 *)&value, sizeof(int));
+#else
+        {
+            struct timeval timeout;
+
+            timeout.tv_sec = value / 1000;
+            timeout.tv_usec = (value % 1000) * 1000;
+
+            result = _NativeSockets_SetOption(&socket.inner, _SOCKET_OPTION_LEVEL_SOCKET, option == ENET_SOCKOPT_RCVTIMEO ? _SOCKET_OPTION_NAME_RECEIVE_TIMEOUT : _SOCKET_OPTION_NAME_SEND_TIMEOUT, (u8 *)&timeout, sizeof(struct timeval));
+        }
+#endif
         break;
 
     case ENET_SOCKOPT_TTL:
@@ -280,19 +301,6 @@ int enet_socket_set_option(ENetSocket socket, ENetSocketOption option, int value
     default:
         break;
     }
-    return result == _SOCKET_ERROR_SUCCESS ? 0 : -1;
-}
-
-/** Sets the socket to blocking or non-blocking mode.
-    @param socket The socket to configure.
-    @param nonBlocking Non-zero to enable non-blocking mode.
-    @retval 0 on success
-    @retval -1 on failure
-*/
-int enet_socket_set_nonblocking(ENetSocket socket, int nonBlocking)
-{
-    i32 result = _NativeSockets_SetBlocking(&socket.inner, nonBlocking == 0);
-
     return result == _SOCKET_ERROR_SUCCESS ? 0 : -1;
 }
 
@@ -330,7 +338,7 @@ int enet_socket_send(ENetSocket socket,
 
     _BuildNativeIoSlices(iovecs, buffers, bufferCount);
 
-    result = _NativeSockets_SendToVectored(&socket.inner, iovecs, (i32)bufferCount, 0, &address->inner);
+    result = address != NULL ? _NativeSockets_SendToVectored(&socket.inner, iovecs, (i32)bufferCount, 0, &address->inner) : _NativeSockets_SendVectored(&socket.inner, iovecs, (i32)bufferCount, 0);
 
     if (iovecs != stackIovecs)
         free(iovecs);
@@ -372,7 +380,7 @@ int enet_socket_receive(ENetSocket socket,
 
     _BuildNativeIoSlices(iovecs, buffers, bufferCount);
 
-    result = _NativeSockets_ReceiveFromVectored(&socket.inner, iovecs, (i32)bufferCount, &flags, address != NULL ? &address->inner : NULL);
+    result = address != NULL ? _NativeSockets_ReceiveFromVectored(&socket.inner, iovecs, (i32)bufferCount, &flags, &address->inner) : _NativeSockets_ReceiveVectored(&socket.inner, iovecs, (i32)bufferCount, &flags);
 
     if (iovecs != stackIovecs)
         free(iovecs);
